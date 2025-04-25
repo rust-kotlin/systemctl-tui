@@ -173,8 +173,6 @@ impl App {
             }
             match Command::new(&editor).arg(path).status() {
               Ok(_) => {
-                tui.enter()?;
-                tui.clear()?;
                 if Command::new("systemctl").arg("start").arg(&service.name).status().is_err() {
                   tui.enter()?;
                   tui.clear()?;
@@ -182,6 +180,8 @@ impl App {
                   action_tx.send(Action::EnterError(format!("Failed to start service `{}`", &service.name)))?;
                   continue;
                 }
+                tui.enter()?;
+                tui.clear()?;
                 event = EventHandler::new(self.home.clone(), action_tx.clone());
                 action_tx.send(Action::RefreshServices)?;
               },
