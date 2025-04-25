@@ -621,25 +621,25 @@ impl Component for Home {
           match self.add_service_stage {
             AddServiceStage::Name => {
               self.add_service_stage = AddServiceStage::Desc;
-							self.add_service_input = Input::default();
+              self.add_service_input = Input::default();
               add_service.name = value
             },
             AddServiceStage::Desc => {
               self.add_service_stage = AddServiceStage::WorkingDir;
-							self.add_service_input = Input::default();
+              self.add_service_input = Input::default();
               add_service.desc = if value.is_empty() { None } else { Some(value) }
             },
             AddServiceStage::WorkingDir => {
               self.add_service_stage = AddServiceStage::Exec;
-							self.add_service_input = Input::default();
+              self.add_service_input = Input::default();
               add_service.working_dir = if value.is_empty() { None } else { Some(value) }
             },
             AddServiceStage::Exec => {
-							self.add_service_input = Input::default();
+              self.add_service_input = Input::default();
               add_service.exec = value;
-							self.add_service_stage = AddServiceStage::Name;
+              self.add_service_stage = AddServiceStage::Name;
               // 最后一步完成后进入处理添加服务的逻辑
-							return vec![Action::AddService(add_service.clone()), Action::EnterMode(Mode::ServiceList)];
+              return vec![Action::AddService(add_service.clone()), Action::EnterMode(Mode::ServiceList)];
             },
           }
           vec![Action::Render]
@@ -759,9 +759,9 @@ impl Component for Home {
       Action::StopService(service_name) => self.stop_service(service_name),
       Action::ReloadService(service_name) => self.reload_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
-			// 这里不用加，在handle_key_events里会直接发送去处理，暂时没有想清dispatch这个函数
+      // 这里不用加，在handle_key_events里会直接发送去处理，暂时没有想清dispatch这个函数
       // Action::AddService => {
-			// 	return Some(Action::AddService)
+      // 	return Some(Action::AddService)
       // },
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
