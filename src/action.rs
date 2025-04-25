@@ -1,5 +1,5 @@
 use crate::{
-  components::home::Mode,
+  components::home::{AddService, Mode},
   systemd::{UnitId, UnitWithStatus},
 };
 
@@ -29,6 +29,7 @@ pub enum Action {
   ReloadService(UnitId),
   EnableService(UnitId),
   DisableService(UnitId),
+  AddService(AddService),
   ScrollUp(u16),
   ScrollDown(u16),
   ScrollToTop,

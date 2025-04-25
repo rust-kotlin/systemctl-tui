@@ -131,6 +131,68 @@ impl App {
               },
             }
           },
+          Action::AddService(service) => {
+            event.stop();
+            let mut tui = terminal.tui.lock().await;
+            tui.exit()?;
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+            let path = "/etc/systemd/system/".to_string() + &service.name + ".service";
+            // 如果该路径存在先备份成.bak文件
+            if std::path::Path::new(&path).exists() {
+              let bak_path = path.clone() + ".bak";
+              if std::fs::copy(&path, &bak_path).is_err() {
+                tui.enter()?;
+                tui.clear()?;
+                event = EventHandler::new(self.home.clone(), action_tx.clone());
+                action_tx.send(Action::EnterError(format!("Failed to create bak file `{}`", bak_path)))?;
+                continue;
+              }
+            }
+            let is_desc = service.desc.is_some();
+            let is_working_dir = service.working_dir.is_some();
+            let unit_file_contents = TEMPLATE
+              .replace("{description}", &service.desc.unwrap_or_default())
+              .replace("{working_directory}", &service.working_dir.unwrap_or_default())
+              .replace("{working_dir}", if is_working_dir { "" } else { "#" })
+              .replace("{exec_start}", &service.exec)
+              .replace("{desc}", if is_desc { "" } else { "#" });
+            if std::fs::write(&path, unit_file_contents).is_err() {
+              tui.enter()?;
+              tui.clear()?;
+              event = EventHandler::new(self.home.clone(), action_tx.clone());
+              action_tx.send(Action::EnterError(format!("Failed to create unit file `{}`", path)))?;
+              continue;
+            }
+            // enable和start该新建的service
+            if Command::new("systemctl").arg("enable").arg(&service.name).status().is_err() {
+              tui.enter()?;
+              tui.clear()?;
+              event = EventHandler::new(self.home.clone(), action_tx.clone());
+              action_tx.send(Action::EnterError(format!("Failed to enable service `{}`", &service.name)))?;
+              continue;
+            }
+            if Command::new("systemctl").arg("start").arg(&service.name).status().is_err() {
+              tui.enter()?;
+              tui.clear()?;
+              event = EventHandler::new(self.home.clone(), action_tx.clone());
+              action_tx.send(Action::EnterError(format!("Failed to start service `{}`", &service.name)))?;
+              continue;
+            }
+            match Command::new(&editor).arg(path).status() {
+              Ok(_) => {
+                tui.enter()?;
+                tui.clear()?;
+                event = EventHandler::new(self.home.clone(), action_tx.clone());
+                action_tx.send(Action::RefreshServices)?;
+              },
+              Err(e) => {
+                tui.enter()?;
+                tui.clear()?;
+                event = EventHandler::new(self.home.clone(), action_tx.clone());
+                action_tx.send(Action::EnterError(format!("Failed to open editor `{}`: {}", editor, e)))?;
+              },
+            }
+          },
           _ => {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
               action_tx.send(_action)?
@@ -158,3 +220,22 @@ impl App {
     Ok(())
   }
 }
+
+const TEMPLATE: &str = r#"[Unit]
+{desc}Description={description}
+After=network.target
+#Requires=postgresql.service
+
+[Service]
+Type=simple
+User=root
+{working_dir}WorkingDirectory={working_directory}
+ExecStart={exec_start}
+Restart=on-failure
+RestartSec=5
+#Environment=PORT={port}
+#Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+"#;

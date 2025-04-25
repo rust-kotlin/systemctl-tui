@@ -37,6 +37,7 @@ pub enum Mode {
   ActionMenu,
   Processing,
   Error,
+  AddService,
 }
 
 #[derive(Default)]
@@ -56,8 +57,34 @@ pub struct Home {
   pub cancel_token: Option<CancellationToken>,
   pub spinner_tick: u8,
   pub error_message: String,
+  pub add_service_input: Input,
+  pub add_service: Option<AddService>,
+  pub add_service_stage: AddServiceStage,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AddService {
+  pub name: String, // necessary
+  //    pub scope: UnitScope, // necessary
+  pub desc: Option<String>,        // unecessary
+  pub working_dir: Option<String>, // unecessary
+  pub exec: String,                // necessary
+}
+
+pub enum AddServiceStage {
+  Name,
+  // Scope,
+  Desc,
+  WorkingDir,
+  Exec,
+}
+
+impl Default for AddServiceStage {
+  fn default() -> Self {
+    Self::Name
+  }
 }
 
 pub struct MenuItem {
@@ -518,6 +545,7 @@ impl Component for Home {
             vec![]
           },
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
+          KeyCode::Char('n') => vec![Action::EnterMode(Mode::AddService)],
           _ => vec![],
         }
       },
@@ -579,6 +607,47 @@ impl Component for Home {
       Mode::Processing => match key.code {
         KeyCode::Esc => vec![Action::CancelTask],
         _ => vec![],
+      },
+      Mode::AddService => match key.code {
+        KeyCode::Esc => {
+          self.add_service = None;
+          self.add_service_stage = AddServiceStage::Name;
+          self.add_service_input = Input::default();
+          vec![Action::EnterMode(Mode::ServiceList)]
+        },
+        KeyCode::Enter => {
+          let value = self.add_service_input.value().to_owned();
+          let add_service = self.add_service.as_mut().unwrap();
+          match self.add_service_stage {
+            AddServiceStage::Name => {
+              self.add_service_stage = AddServiceStage::Desc;
+							self.add_service_input = Input::default();
+              add_service.name = value
+            },
+            AddServiceStage::Desc => {
+              self.add_service_stage = AddServiceStage::WorkingDir;
+							self.add_service_input = Input::default();
+              add_service.desc = if value.is_empty() { None } else { Some(value) }
+            },
+            AddServiceStage::WorkingDir => {
+              self.add_service_stage = AddServiceStage::Exec;
+							self.add_service_input = Input::default();
+              add_service.working_dir = if value.is_empty() { None } else { Some(value) }
+            },
+            AddServiceStage::Exec => {
+							self.add_service_input = Input::default();
+              add_service.exec = value;
+							self.add_service_stage = AddServiceStage::Name;
+              // 最后一步完成后进入处理添加服务的逻辑
+							return vec![Action::AddService(add_service.clone()), Action::EnterMode(Mode::ServiceList)];
+            },
+          }
+          vec![Action::Render]
+        },
+        _ => {
+          self.add_service_input.handle_event(&crossterm::event::Event::Key(key));
+          vec![Action::Render]
+        },
       },
     }
   }
@@ -690,6 +759,10 @@ impl Component for Home {
       Action::StopService(service_name) => self.stop_service(service_name),
       Action::ReloadService(service_name) => self.reload_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
+			// 这里不用加，在handle_key_events里会直接发送去处理，暂时没有想清dispatch这个函数
+      // Action::AddService => {
+			// 	return Some(Action::AddService)
+      // },
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
@@ -1003,11 +1076,16 @@ impl Component for Home {
 
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", Color::Blue)),
-      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open unit file: e | Quit: q", Color::Blue)),
+      Mode::ServiceList => Line::from(span(
+        "Show actions: <enter> | Open unit file: e | Add service: n | Quit: q
+      ",
+        Color::Blue,
+      )),
       Mode::Help => Line::from(span("Close menu: <esc>", Color::Blue)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", Color::Blue)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", Color::Blue)),
       Mode::Error => Line::from(span("Close menu: <esc>", Color::Blue)),
+      Mode::AddService => Line::from(span("Close menu: <esc>", Color::Blue)),
     };
 
     f.render_widget(help_line, help_rect);
@@ -1068,6 +1146,38 @@ impl Component for Home {
 
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);
+    }
+
+    if self.mode == Mode::AddService {
+      let popup = centered_rect_abs(search_panel.width / 2, search_panel.height, f.area());
+      let width = popup.width.max(3) - 3; // keep 2 for borders and 1 for cursor
+      let scroll = self.add_service_input.visual_scroll(width as usize);
+      if self.add_service.is_none() {
+        self.add_service = Some(AddService { name: String::new(), desc: None, working_dir: None, exec: String::new() });
+      }
+      let hint = match self.add_service_stage {
+        AddServiceStage::Name => "Name of the service",
+        AddServiceStage::Desc => "Description (nullable)",
+        AddServiceStage::WorkingDir => "Working Directory (nullable)",
+        AddServiceStage::Exec => "Exec Command",
+      };
+
+      let paragraph = Paragraph::new(self.add_service_input.value())
+        .style(Style::default().fg(Color::LightGreen))
+        .scroll((0, scroll as u16))
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(Line::from(vec![
+          Span::raw("─Add Service "),
+          Span::styled("(Please Enter: ", Style::default().fg(Color::DarkGray)),
+          Span::styled(hint, Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
+          Span::styled(")", Style::default().fg(Color::DarkGray)),
+        ])));
+
+      f.render_widget(Clear, popup);
+      f.render_widget(paragraph, popup);
+      f.set_cursor_position((
+        (popup.x + 1 + self.add_service_input.cursor() as u16).min(popup.x + popup.width - 2),
+        popup.y + 1,
+      ));
     }
   }
 }
