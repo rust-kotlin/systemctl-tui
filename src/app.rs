@@ -109,7 +109,7 @@ impl App {
             };
 
             let unit_file_contents = read_unit_file_contents();
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
             match Command::new(&editor).arg(&path).status() {
               Ok(_) => {
                 tui.enter()?;
