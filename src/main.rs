@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use systemctl_tui::{
@@ -19,6 +21,8 @@ struct Args {
   /// Limit view to only these unit files
   #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
+  /// Arguments to pass directly to systemctl
+  systemctl_args: Vec<String>,
 }
 
 #[derive(Parser, Debug, ValueEnum, Clone)]
@@ -36,6 +40,18 @@ async fn main() -> Result<()> {
   }
 
   let args = Args::parse();
+  if !args.systemctl_args.is_empty() {
+    let status = Command::new("systemctl")
+      .args(args.systemctl_args)
+      .status()
+      .expect("Failed to execute systemctl");
+    if !status.success() {
+      eprintln!("systemctl command failed with status: {}", status);
+      std::process::exit(1);
+    }
+    return Ok(());
+  }
+
   let _guard = initialize_logging(args.trace)?;
   initialize_panic_handler();
 
