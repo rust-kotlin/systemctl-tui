@@ -16,7 +16,7 @@ Note: this project only works on Linux (WSL works _if_ you [have systemd enabled
 Automated install/update (don't forget to always verify what you're piping into bash):
 
 ```sh
-curl https://raw.githubusercontent.com/rgwood/systemctl-tui/master/install.sh | bash
+curl https://raw.githubusercontent.com/rust-kotlin/systemctl-tui/master/install.sh | bash
 ```
 The script installs downloaded binary to `$HOME/.local/bin` directory by default, but it can be changed by setting `DIR` environment variable.
 
