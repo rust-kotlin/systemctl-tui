@@ -216,6 +216,11 @@ impl Home {
     info!("Filtered units in {:?}", now.elapsed());
   }
 
+  pub fn sort_units(&mut self) {
+    // sort by name case-insensitive
+    self.all_units.sort_by(|_: &systemd::UnitId, v1, _, v2| v1.name.to_lowercase().cmp(&v2.name.to_lowercase()));
+  }
+
   pub fn next(&mut self) {
     self.logs = vec![];
     self.filtered_units.next();
@@ -261,7 +266,7 @@ impl Home {
     }
   }
 
-  fn refresh_filtered_units(&mut self) {
+  pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value_lower = self.input.value().to_lowercase();
     // TODO: use fuzzy find
@@ -318,6 +323,18 @@ impl Home {
     let cancel_token = CancellationToken::new();
     let future = systemd::restart_service(service.clone(), cancel_token.clone());
     self.service_action(service, "Restart".into(), cancel_token, future);
+  }
+
+  fn enable_service(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::enable_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Enable".into(), cancel_token, future);
+  }
+
+  fn disable_service(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::disable_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Disable".into(), cancel_token, future);
   }
 
   fn service_action<Fut>(&mut self, service: UnitId, action_name: String, cancel_token: CancellationToken, action: Fut)
@@ -666,9 +683,8 @@ impl Component for Home {
               MenuItem::new("Stop", Action::StopService(selected.id()), Some(KeyCode::Char('t'))),
               MenuItem::new("Restart", Action::RestartService(selected.id()), Some(KeyCode::Char('r'))),
               MenuItem::new("Reload", Action::ReloadService(selected.id()), Some(KeyCode::Char('l'))),
-              // TODO add these
-              // MenuItem::new("Enable", Action::EnableService(selected.clone())),
-              // MenuItem::new("Disable", Action::DisableService(selected.clone())),
+              MenuItem::new("Enable", Action::EnableService(selected.id()), Some(KeyCode::Char('u'))),
+              MenuItem::new("Disable", Action::DisableService(selected.id()), Some(KeyCode::Char('d'))),
             ];
 
             if let Some(Ok(file_path)) = &selected.file_path {
@@ -759,6 +775,8 @@ impl Component for Home {
       Action::StopService(service_name) => self.stop_service(service_name),
       Action::ReloadService(service_name) => self.reload_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
+      Action::EnableService(service_name) => self.enable_service(service_name),
+      Action::DisableService(service_name) => self.disable_service(service_name),
       // 这里不用加，在handle_key_events里会直接发送去处理，暂时没有想清dispatch这个函数
       // Action::AddService => {
       // 	return Some(Action::AddService)
@@ -876,7 +894,7 @@ impl Component for Home {
     let selected_item = self.filtered_units.selected();
 
     let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Min(7), Constraint::Percentage(100)]).split(right_panel);
+      Layout::new(Direction::Vertical, [Constraint::Min(8), Constraint::Percentage(100)]).split(right_panel);
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
@@ -891,6 +909,7 @@ impl Component for Home {
       Line::from("Scope: "),
       Line::from("Loaded: "),
       Line::from("Active: "),
+      Line::from("Enabled: "),
       Line::from("Unit file: "),
     ];
 
@@ -913,6 +932,17 @@ impl Component for Home {
         _ => Color::Reset,
       };
 
+      //   let enabled = match i.enablement_state.clone() {
+      //     Some(state) => {
+      //         if state == "enabled" {
+      //           state.to_string()
+      //         } else {
+      //           "Disabled".to_string()
+      //         }
+      //     },
+      //     None => "Not Found".to_string(),
+      //   };
+
       let active_state_value = format!("{} ({})", i.activation_state, i.sub_state);
 
       let scope = match i.scope {
@@ -925,6 +955,18 @@ impl Component for Home {
         colored_line(scope, Color::Reset),
         colored_line(&i.load_state, load_color),
         line_color_string(active_state_value, active_color),
+        match i.enablement_state {
+          Some(ref state) => {
+            if state == "enabled" {
+              colored_line(state, Color::Green)
+            } else if state == "disabled" {
+              colored_line(state, Color::Red)
+            } else {
+              colored_line(state, Color::Reset)
+            }
+          },
+          None => colored_line("unknown", Color::Reset),
+        },
         match &i.file_path {
           Some(Ok(file_path)) => Line::from(file_path.as_str()),
           Some(Err(e)) => colored_line(e, Color::Red),

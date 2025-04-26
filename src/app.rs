@@ -1,8 +1,8 @@
-use std::{process::Command, sync::Arc};
+use std::{process::Command, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use log::error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::{sync::{mpsc, Mutex}, time::sleep};
 use tracing::debug;
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     Component,
   },
   event::EventHandler,
-  systemd::{get_all_services, Scope},
+  systemd::{get_all_services, Scope, UnitWithStatus},
   terminal::TerminalHandler,
 };
 
@@ -66,6 +66,55 @@ impl App {
       .await
       .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
     self.home.lock().await.set_units(units);
+
+    // Start a background task to update services based on the ListUnitFiles dbus call
+    tokio::spawn({
+      let scope = self.scope;
+      let action_tx = action_tx.clone();
+      let home_cloned = self.home.clone();
+      async move {
+        loop {
+          let unit_files = crate::systemd::get_unit_files(scope).await;
+          match unit_files {
+            Ok(unit_files) => {
+              let mut home = home_cloned.lock().await;
+              let all_units = &mut home.all_units;
+
+              for service in unit_files {
+                let id = service.id();
+                // info!("id: {:?}", id);
+                if let Some(unit) = all_units.get_mut(&id) {
+                  unit.enablement_state = Some(service.enablement_state);
+                  unit.file_path = Some(Ok(service.path));
+                } else if service.enablement_state == "disabled" {
+                  // only adding disabled services because static/generated/masked services seem uninteresting
+                  // TODO: check with power users if this is the right approach
+                  let new_unit = UnitWithStatus {
+                    name: service.name,
+                    scope: service.scope,
+                    description: "".into(),
+                    file_path: Some(Ok(service.path)),
+                    load_state: "unknown".into(),
+                    activation_state: "unknown".into(),
+                    sub_state: "unknown".into(),
+                    enablement_state: Some(service.enablement_state),
+                  };
+                  all_units.insert(id, new_unit);
+                }
+              }
+              home.sort_units();
+              home.refresh_filtered_units();
+            },
+            Err(e) => {
+              tracing::error!("Failed to get services: {:?}", e);
+            },
+          }
+          action_tx.send(Action::Render).unwrap();
+          // TODO: figure out the right timing
+          sleep(Duration::from_secs(5)).await;
+        }
+      }
+    });
 
     let mut terminal = TerminalHandler::new(self.home.clone());
     let mut event = EventHandler::new(self.home.clone(), action_tx.clone());

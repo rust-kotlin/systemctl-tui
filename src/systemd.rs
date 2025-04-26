@@ -164,6 +164,77 @@ async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitW
   Ok(units)
 }
 
+pub struct UnitFile {
+  pub name: String,
+  pub scope: UnitScope,
+  pub enablement_state: String,
+  pub path: String,
+}
+
+impl UnitFile {
+  pub fn id(&self) -> UnitId {
+    UnitId { name: self.name.clone(), scope: self.scope }
+  }
+}
+
+/// Uses ListUnitFiles to get info for all services, including disabled ones
+/// The tradeoff is that this is slow, we don't get as much info as from ListUnits,
+/// and this returns a ton of static/masked/generated services that are not super interesting (at least to me)
+pub async fn get_unit_files(scope: Scope) -> Result<Vec<UnitFile>> {
+  let start = std::time::Instant::now();
+  let mut unit_scopes = vec![];
+  match scope {
+    Scope::Global => unit_scopes.push(UnitScope::Global),
+    Scope::User => unit_scopes.push(UnitScope::User),
+    Scope::All => {
+      unit_scopes.push(UnitScope::Global);
+      unit_scopes.push(UnitScope::User);
+    },
+  }
+
+  let mut ret = vec![];
+
+  for unit_scope in unit_scopes {
+    let unit_files = match get_service_unit_files(unit_scope).await {
+      Ok(unit_files) => unit_files,
+      Err(e) => {
+        if nix::unistd::geteuid().is_root() {
+          error!("Failed to get user units, ignoring because we're running as root and that's kinda expected");
+          vec![]
+        } else {
+          return Err(e);
+        }
+      },
+    };
+
+    let services = unit_files
+      .iter()
+      .map(|(path, state)| {
+        // get the service name, e.g. foo.bar.baz.service from /somewhere/foo.bar.baz.service
+        let rust_path = std::path::Path::new(path);
+        let file_stem = rust_path.file_name().unwrap_or_default().to_str().unwrap_or_default();
+        (file_stem.to_string(), state.to_string(), path.to_string())
+      })
+      .map(|(name, state, path)| UnitFile { name, scope: unit_scope, enablement_state: state, path })
+      .collect::<Vec<_>>();
+    ret.extend(services);
+  }
+
+  info!("Loaded {} unit files in {:?}", ret.len(), start.elapsed());
+
+  Ok(ret)
+}
+
+/// Get unit files for all services, INCLUDING DISABLED ONES (the normal systemd APIs don't include those, which is annoying)
+/// This is slow. Takes about 100ms (user) and 300ms (global) on 13th gen Intel i7
+/// Returns a list of (path, state)s
+pub async fn get_service_unit_files(scope: UnitScope) -> Result<Vec<(String, String)>> {
+  let connection = get_connection(scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  let unit_files = manager_proxy.list_unit_files_by_patterns(vec![], vec!["*.service".into()]).await?;
+  Ok(unit_files)
+}
+
 pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
   // show -P FragmentPath reitunes.service
   let mut args = vec!["--quiet", "show", "-P", "FragmentPath"];
@@ -275,6 +346,45 @@ pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -
   }
 }
 
+pub async fn enable_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn enable(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    manager_proxy.enable_unit_files(vec![service.name], false, false).await?;
+    // 还需要reload下daemon
+    manager_proxy.reload().await?;
+    Ok(())
+  }
+  tokio::select! {
+      _ = cancel_token.cancelled() => {
+          // The token was cancelled
+          anyhow::bail!("cancelled");
+      }
+      result = enable(service) => {
+          result
+      }
+  }
+}
+
+pub async fn disable_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn disable(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    manager_proxy.disable_unit_files(vec![service.name], false).await?;
+    manager_proxy.reload().await?;
+    Ok(())
+  }
+  tokio::select! {
+      _ = cancel_token.cancelled() => {
+          // The token was cancelled
+          anyhow::bail!("cancelled");
+      }
+      result = disable(service) => {
+          result
+      }
+  }
+}
+
 // useless function only added to test that cancellation works
 pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
   // god these select macros are ugly, is there really no better way to select?
@@ -366,6 +476,13 @@ pub trait Manager {
       zvariant::OwnedObjectPath,
     )>,
   >;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/latest/systemd.directives.html#ListUnitFilesByPatterns()) Call interface method `ListUnitFilesByPatterns`.
+  fn list_unit_files_by_patterns(
+    &self,
+    states: Vec<String>,
+    patterns: Vec<String>,
+  ) -> zbus::Result<Vec<(String, String)>>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#Reload()) Call interface method `Reload`.
   #[dbus_proxy(name = "Reload")]
