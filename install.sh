@@ -17,6 +17,7 @@ GITHUB_URL="https://github.com/rust-kotlin/systemctl-tui/releases/download/${GIT
 
 # install/update the local binary
 curl -L -o systemctl-tui.tar.gz $GITHUB_URL
-tar xzvf systemctl-tui.tar.gz st
+tar xzvf systemctl-tui.tar.gz systemctl-tui
+mv systemctl-tui st
 install -Dm 755 st -t "$DIR"
 rm st systemctl-tui.tar.gz
